@@ -1,0 +1,789 @@
+---
+title: "Chintan PRF Consultation"
+author: "Keenan Anderson-Fears"
+date: "6/3/2022"
+output: html_document
+---
+
+```{r, message=F, warning=F, echo=F}
+library(glmnet)
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(readxl)
+library(biomaRt)
+library(qqman)
+library(lmtest)
+library(kableExtra)
+library(Biobase)
+library(fastDummies)
+```
+
+### Formatting
+```{r, message=F, warning=F}
+ca <- read_excel("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Consultation2/Pediatric respiratory failure_cases.xlsx")
+con <- read_excel("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Consultation2/Pediatric respiratory failure_Control_Newborn.xlsx")
+
+ca <- ca[, -c(1,2,6)]
+con <- con[, -c(1,2,6)]
+
+colnames(con)[colnames(con) == "Race"] <- "Racial Category"
+colnames(con)[colnames(con) == "Ethinicity"] <- "Ethnic Category"
+
+phenotype1 <- data.frame("Phenotype"=matrix(2, nrow=nrow(ca), ncol=1))
+phenotype2 <- data.frame("Phenotype"=matrix(1, nrow=nrow(con), ncol=1))
+
+Ca <- cbind(ca, phenotype1)
+Con <- cbind(con, phenotype2)
+
+Full_Data <- rbind(Ca, Con)
+Full_Data$Gender <- ifelse(Full_Data$Gender=="Male",1,2)
+
+Full_Data$Ethnicity <- ifelse(Full_Data$`Racial Category` == "White" & Full_Data$`Ethnic Category` == "Non-Hispanic", "White",
+                         ifelse(Full_Data$`Racial Category` == "White" & Full_Data$`Ethnic Category` == "Hispanic", "Latino",
+                                ifelse(Full_Data$`Racial Category` == "Black", "Black",
+                                       ifelse(Full_Data$`Racial Category` == "Asian", "Asian", 
+                                              ifelse(Full_Data$`Racial Category` == "American Indian/Alaska Native", "Native",
+                                                     ifelse(Full_Data$`Racial Category` == "Native Hawaiian or other Pacific Islander", "Islander", "Mixed"))))))
+Full_Data <- dummy_cols(Full_Data, select_columns = 'Ethnicity')
+
+write.table(Full_Data, 
+            "/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Consultation2/Full_Data2.txt", 
+            sep="\t", 
+            quote=T)
+
+head(Full_Data)
+```
+
+### Obtain CHROM & POS using BiomaRt
+```{r, message=F, warning=F}
+mart = useMart("ENSEMBL_MART_SNP", dataset="hsapiens_snp")
+snp_ids = colnames(Full_Data)[4:17]
+snp_attributes = c("refsnp_id", "chr_name", "chrom_start")
+snp_locations = getBM(attributes=snp_attributes, 
+                      filters="snp_filter", 
+                      values=snp_ids, 
+                      mart=mart)
+snp_locations
+```
+
+### Create Required Files for PLINK(2)
+```{r, warning=F, message=F}
+PEDFile <- data.frame(cbind("FID"=paste0("FAM", sample(seq(1, nrow(Full_Data), by=1), replace=F)), 
+                 "IID"= 1, 
+                 "PID"=1, 
+                 "MID"=1, 
+                 "SEX"=Full_Data$Gender, 
+                 "Pheno"=Full_Data$Phenotype,
+                 "rs1059046"=unlist(lapply(strsplit(Full_Data$rs1059046,''), paste, collapse = ' ')),
+                 "rs17886395"=unlist(lapply(strsplit(Full_Data$rs17886395,''), paste, collapse = ' ')),
+                 "rs1965707"=unlist(lapply(strsplit(Full_Data$rs1965707,''), paste, collapse = ' ')),
+                 "rs1965708"=unlist(lapply(strsplit(Full_Data$rs1965708,''), paste, collapse = ' ')),
+                 "rs1059047"=unlist(lapply(strsplit(Full_Data$rs1059047,''), paste, collapse = ' ')),
+                 "rs1136450"=unlist(lapply(strsplit(Full_Data$rs1136450,''), paste, collapse = ' ')),
+                 "rs1136451"=unlist(lapply(strsplit(Full_Data$rs1136451,''), paste, collapse = ' ')),
+                 "rs1059057"=unlist(lapply(strsplit(Full_Data$rs1059057,''), paste, collapse = ' ')),
+                 "rs4253527"=unlist(lapply(strsplit(Full_Data$rs4253527,''), paste, collapse = ' ')),
+                 "rs1130866"=unlist(lapply(strsplit(Full_Data$rs1130866,''), paste, collapse = ' ')),
+                 "rs4715"=unlist(lapply(strsplit(Full_Data$rs4715,''), paste, collapse = ' ')),
+                 "rs1124"=unlist(lapply(strsplit(Full_Data$rs1124,''), paste, collapse = ' ')),
+                 "rs721917"=unlist(lapply(strsplit(Full_Data$rs721917,''), paste, collapse = ' ')),
+                 "rs2243639"=unlist(lapply(strsplit(Full_Data$rs2243639,''), paste, collapse = ' '))))
+
+MAPFile <- data.frame(cbind("chromosome"=snp_locations$chr_name, 
+                 "rsID"=data.frame("rsID"=snp_locations$refsnp_id), 
+                 "Genetic Distance"=data.frame("Genetic Distance"=matrix(0, nrow=length(colnames(Full_Data)[9:22]), ncol=1)), 
+                 "BP"=snp_locations$chrom_start))
+
+CovarFile <- data.frame(cbind("FID"=PEDFile$FID,
+                              "IID"=PEDFile$IID,
+                              "Sex" = Full_Data$Gender,
+                              "Asian" = Full_Data$Ethnicity_Asian,
+                              "Black" = Full_Data$Ethnicity_Black,
+                              "Island" = Full_Data$Ethnicity_Islander,
+                              "Latino" = Full_Data$Ethnicity_Latino,
+                              "Mixed" = Full_Data$Ethnicity_Mixed,
+                              "Native" = Full_Data$Ethnicity_Native,
+                              "White" = Full_Data$Ethnicity_White))
+
+write.table(PEDFile, 
+            "/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Consultation2/RSVData2.ped", 
+            sep="\t", 
+            quote=F,
+            col.names=F, 
+            row.names=F)
+write.table(MAPFile, 
+            "/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Consultation2/RSVData2.map", 
+            sep="\t", 
+            quote=F,
+            col.names=F,
+            row.names=F)
+write.table(CovarFile, 
+            "/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Consultation2/RSVCovariates2.txt", 
+            sep="\t", 
+            quote=F, 
+            col.names=T, 
+            row.names=F)
+```
+
+### Run PLINK(2)
+```{}
+plink --file RSVData2 --out RSVData2 --make-bed
+
+plink2 --bfile RSVData2 --covar RSVCovariates2.txt --glm hide-covar --covar-variance-standardize --covar-col-nums 3-10
+```
+
+### PLINK Results
+```{r, warning=F, message=F}
+results <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Consultation2/plink2.PHENO1.glm.logistic", 
+                 sep="\t", header=T)
+
+print(results[,c(3,9,10,12)], max=14)
+```
+
+### Plots for PLINK(2) Results
+```{r, message=F, warning=F, echo=F}
+qq(results$P, cex=1, main="QQ-Plot")
+manhattan(results,chr="#CHROM",bp="POS",p="P",snp="ID",col=c("orange","purple"),chrlabs=NULL,annotatePval=NULL,annotateTop=TRUE, ylim=c(0,4), suggestiveline=-log10(0.05/14), main="Manhattan Plot Normal Covariates")
+```
+
+Results from individual SNP tests show that two SNPs (rs1124 & rs2243639) rise to the level of significance of 0.05
+(0.0276113 and 0.0453539 respectively). However, when correcting for the number of tests performed (p = 0.05/14 = 0.003571429) neither SNP remains significant.
+
+### Formatting for Combined LR Model
+```{r, message=F, warning=F}
+recraw <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Consultation2/RSVrecode2.raw", sep=" ", header=T)
+reccov <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Consultation2/RSVrecode2.cov", sep=" ", header=T)
+recraw$PHENOTYPE <- ifelse(recraw$PHENOTYPE == 2, 1, 0)
+
+recraw <- recraw[,-c(1,2,3,4,5)]
+reccov <- reccov[,-c(1,2,10)]
+recoded <- cbind(recraw,reccov)
+recoded$Sex <- ifelse(recoded$Sex == 2, 1, 0)
+```
+
+### Using Factors instead of PLINK's Recode for SNP Regression
+```{r, message=F, warning=F}
+genotypes <- Full_Data[,4:17]
+genotypes$rs1059046 <- factor(genotypes$rs1059046, levels = c("AA", "AC", "CC"))
+genotypes$rs17886395 <- factor(genotypes$rs17886395, levels = c("GG", "CG", "CC"))
+genotypes$rs1965707 <- factor(genotypes$rs1965707, levels = c("TT", "CT", "CC"))
+genotypes$rs1965708 <- factor(genotypes$rs1965708, levels = c("AA", "AC", "CC"))
+genotypes$rs1059047 <- factor(genotypes$rs1059047, levels = c("TT", "CT", "CC"))
+genotypes$rs1136450 <- factor(genotypes$rs1136450, levels = c("GG", "CG", "CC"))
+genotypes$rs1136451 <- factor(genotypes$rs1136451, levels = c("AA", "AG", "GG"))
+genotypes$rs1059057 <- factor(genotypes$rs1059057, levels = c("AA", "AG", "GG"))
+genotypes$rs4253527 <- factor(genotypes$rs4253527, levels = c("TT","CT","CC"))
+genotypes$rs1130866 <- factor(genotypes$rs1130866, levels = c("TT","CT","CC"))
+genotypes$rs4715 <- factor(genotypes$rs4715, levels = c("AA", "AC", "CC"))
+genotypes$rs1124 <- factor(genotypes$rs1124, levels = c("AA", "AG", "GG"))
+genotypes$rs721917 <- factor(genotypes$rs721917, levels = c("TT","CT","CC"))
+genotypes$rs2243639 <- factor(genotypes$rs2243639, levels = c("AA","AG","GG"))
+genotypes <- cbind("Phenotype"=recoded$PHENOTYPE, 
+                   genotypes, 
+                   "Sex"=recoded$Sex, 
+                   "Asian"=recoded$Asian, 
+                   "Black"=recoded$Black, 
+                   "Island"=recoded$Island, 
+                   "Latino"=recoded$Latino, 
+                   "Mixed"=recoded$Mixed, 
+                   "Native"=recoded$Native)
+```
+
+### SNP Regression Results
+```{r, message=F, warning=F}
+mod1 <- glm(Phenotype ~ ., data=genotypes, family=binomial)
+summary(mod1)
+```
+
+```{r, message=F, warning=F, echo=F}
+SNPodds <- exp(mod1$coefficients)
+SNPData <- as.data.frame(cbind("Name"=matrix(names(mod1$coefficients)[-c(1,17)], ncol=1),
+                                "OR"=na.omit(unname(SNPodds)[-1]),
+                                "P"=matrix(coef(summary(mod1))[-1,4], ncol=1),
+                                "2.5%"=matrix(exp(na.omit(confint.default(mod1, level=0.95))[-1,])[,1]),
+                                "97.5%"=matrix(exp(na.omit(confint.default(mod1, level=0.95))[-1,])[,2])))
+
+SNPData <- subset(SNPData, V3 < 0.10)
+colnames(SNPData)[colnames(SNPData) == "V1"] <- "Variant"
+colnames(SNPData)[colnames(SNPData) == "V3"] <- "P"
+colnames(SNPData)[colnames(SNPData) == "V4"] <- "2.5%"
+colnames(SNPData)[colnames(SNPData) == "V5"] <- "97.5%"
+rownames(SNPData) <- NULL
+
+# Approximate proportion of pediatric patients with incidence of acute respiratory failure
+ARFodds <- 0.03/(1 - 0.03)
+SNPData$ARF_Risk <- (as.numeric(SNPData$OR)*ARFodds)/(1 + as.numeric(SNPData$OR)*ARFodds)
+
+SNPData %>%
+  kbl(caption = "Odds Ratios & CIs of Significant SNPs & Covariates Before Correction") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+
+The combined SNP model identified 0 significant variants and covariants following Bonferroni correction.
+
+### SNP Likelihood Ratio Tests
+
+Finally we assess the goodness of fit between a model with clinical covariates only and a model containing clinical covariates and our genetic variants
+```{r, message=F, warning=F}
+genotypes <- na.omit(genotypes)
+fullmodel <- glm(Phenotype ~ ., data=genotypes, family=binomial)
+covmodel <- glm(Phenotype ~ Sex + Black + Asian + Island + Latino + Mixed + Native, data=genotypes, family=binomial)
+
+lrtest(fullmodel, covmodel)
+```
+
+Here we ask does the data fit each of the two models equally well, and from this we see that with a Chisq of 41.477 and P-Value of 0.03703, that we reject the null hypothesis that the two are equal. Therefore, the model with the additional genetic variants is a better fit and offers significant improvement over the model with only the covarites as our predictors.
+
+### Generating Frequency Tables for Cases and Controls
+```{r}
+### Cases ###
+Ca$Gender <- ifelse(Ca$Gender=="Male",1,2)
+
+Ca$Ethnicity <- ifelse(Ca$`Racial Category` == "White" & Ca$`Ethnic Category` == "Non-Hispanic", "White",
+                         ifelse(Ca$`Racial Category` == "White" & Ca$`Ethnic Category` == "Hispanic", "Latino",
+                                ifelse(Ca$`Racial Category` == "Black", "Black",
+                                       ifelse(Ca$`Racial Category` == "Asian", "Asian", 
+                                              ifelse(Ca$`Racial Category` == "American Indian/Alaska Native", "Native",
+                                                     ifelse(Ca$`Racial Category` == "Native Hawaiian or other Pacific Islander", "Islander", "Mixed"))))))
+Ca <- dummy_cols(Ca, select_columns = 'Ethnicity')
+
+Camart = useMart("ENSEMBL_MART_SNP", dataset="hsapiens_snp")
+Casnp_ids = colnames(Ca)[4:17]
+Casnp_attributes = c("refsnp_id", "chr_name", "chrom_start")
+Casnp_locations = getBM(attributes=Casnp_attributes, 
+                      filters="snp_filter", 
+                      values=Casnp_ids, 
+                      mart=Camart)
+Casnp_locations
+
+PEDFile <- data.frame(cbind("FID"=paste0("FAM", sample(seq(1, nrow(Ca), by=1), replace=F)), 
+                 "IID"= 1, 
+                 "PID"=1, 
+                 "MID"=1, 
+                 "SEX"=Ca$Gender, 
+                 "Pheno"=Ca$Phenotype,
+                 "rs1059046"=unlist(lapply(strsplit(Ca$rs1059046,''), paste, collapse = ' ')),
+                 "rs17886395"=unlist(lapply(strsplit(Ca$rs17886395,''), paste, collapse = ' ')),
+                 "rs1965707"=unlist(lapply(strsplit(Ca$rs1965707,''), paste, collapse = ' ')),
+                 "rs1965708"=unlist(lapply(strsplit(Ca$rs1965708,''), paste, collapse = ' ')),
+                 "rs1059047"=unlist(lapply(strsplit(Ca$rs1059047,''), paste, collapse = ' ')),
+                 "rs1136450"=unlist(lapply(strsplit(Ca$rs1136450,''), paste, collapse = ' ')),
+                 "rs1136451"=unlist(lapply(strsplit(Ca$rs1136451,''), paste, collapse = ' ')),
+                 "rs1059057"=unlist(lapply(strsplit(Ca$rs1059057,''), paste, collapse = ' ')),
+                 "rs4253527"=unlist(lapply(strsplit(Ca$rs4253527,''), paste, collapse = ' ')),
+                 "rs1130866"=unlist(lapply(strsplit(Ca$rs1130866,''), paste, collapse = ' ')),
+                 "rs4715"=unlist(lapply(strsplit(Ca$rs4715,''), paste, collapse = ' ')),
+                 "rs1124"=unlist(lapply(strsplit(Ca$rs1124,''), paste, collapse = ' ')),
+                 "rs721917"=unlist(lapply(strsplit(Ca$rs721917,''), paste, collapse = ' ')),
+                 "rs2243639"=unlist(lapply(strsplit(Ca$rs2243639,''), paste, collapse = ' '))))
+
+MAPFile <- data.frame(cbind("chromosome"=Casnp_locations$chr_name, 
+                 "rsID"=data.frame("rsID"=Casnp_locations$refsnp_id), 
+                 "Genetic Distance"=data.frame("Genetic Distance"=matrix(0, nrow=length(colnames(Ca)[9:22]), ncol=1)), 
+                 "BP"=Casnp_locations$chrom_start))
+
+CovarFile <- data.frame(cbind("FID"=PEDFile$FID,
+                              "IID"=PEDFile$IID,
+                              "Sex" = Ca$Gender,
+                              "Asian" = Ca$Ethnicity_Asian,
+                              "Black" = Ca$Ethnicity_Black,
+                              "Island" = Ca$Ethnicity_Islander,
+                              "Latino" = Ca$Ethnicity_Latino,
+                              "Mixed" = Ca$Ethnicity_Mixed,
+                              "Native" = Ca$Ethnicity_Native,
+                              "White" = Ca$Ethnicity_White))
+
+write.table(PEDFile, 
+            "/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Consultation2/PRF_Cases.ped", 
+            sep="\t", 
+            quote=F,
+            col.names=F, 
+            row.names=F)
+write.table(MAPFile, 
+            "/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Consultation2/PRF_Cases.map", 
+            sep="\t", 
+            quote=F,
+            col.names=F,
+            row.names=F)
+write.table(CovarFile, 
+            "/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Consultation2/PRF_Cases.txt", 
+            sep="\t", 
+            quote=F, 
+            col.names=T, 
+            row.names=F)
+
+### Controls ###
+Con$Gender <- ifelse(Con$Gender=="Male",1,2)
+
+Con$Ethnicity <- ifelse(Con$`Racial Category` == "White" & Con$`Ethnic Category` == "Non-Hispanic", "White",
+                         ifelse(Con$`Racial Category` == "White" & Con$`Ethnic Category` == "Hispanic", "Latino",
+                                ifelse(Con$`Racial Category` == "Black", "Black",
+                                       ifelse(Con$`Racial Category` == "Asian", "Asian", 
+                                              ifelse(Con$`Racial Category` == "American Indian/Alaska Native", "Native",
+                                                     ifelse(Con$`Racial Category` == "Native Hawaiian or other Pacific Islander", "Islander", "Mixed"))))))
+Con <- dummy_cols(Con, select_columns = 'Ethnicity')
+
+Conmart = useMart("ENSEMBL_MART_SNP", dataset="hsapiens_snp")
+Consnp_ids = colnames(Con)[4:17]
+Consnp_attributes = c("refsnp_id", "chr_name", "chrom_start")
+Consnp_locations = getBM(attributes=Consnp_attributes, 
+                      filters="snp_filter", 
+                      values=Consnp_ids, 
+                      mart=Conmart)
+Consnp_locations
+
+PEDFile <- data.frame(cbind("FID"=paste0("FAM", sample(seq(1, nrow(Con), by=1), replace=F)), 
+                 "IID"= 1, 
+                 "PID"=1, 
+                 "MID"=1, 
+                 "SEX"=Con$Gender, 
+                 "Pheno"=Con$Phenotype,
+                 "rs1059046"=unlist(lapply(strsplit(Con$rs1059046,''), paste, collapse = ' ')),
+                 "rs17886395"=unlist(lapply(strsplit(Con$rs17886395,''), paste, collapse = ' ')),
+                 "rs1965707"=unlist(lapply(strsplit(Con$rs1965707,''), paste, collapse = ' ')),
+                 "rs1965708"=unlist(lapply(strsplit(Con$rs1965708,''), paste, collapse = ' ')),
+                 "rs1059047"=unlist(lapply(strsplit(Con$rs1059047,''), paste, collapse = ' ')),
+                 "rs1136450"=unlist(lapply(strsplit(Con$rs1136450,''), paste, collapse = ' ')),
+                 "rs1136451"=unlist(lapply(strsplit(Con$rs1136451,''), paste, collapse = ' ')),
+                 "rs1059057"=unlist(lapply(strsplit(Con$rs1059057,''), paste, collapse = ' ')),
+                 "rs4253527"=unlist(lapply(strsplit(Con$rs4253527,''), paste, collapse = ' ')),
+                 "rs1130866"=unlist(lapply(strsplit(Con$rs1130866,''), paste, collapse = ' ')),
+                 "rs4715"=unlist(lapply(strsplit(Con$rs4715,''), paste, collapse = ' ')),
+                 "rs1124"=unlist(lapply(strsplit(Con$rs1124,''), paste, collapse = ' ')),
+                 "rs721917"=unlist(lapply(strsplit(Con$rs721917,''), paste, collapse = ' ')),
+                 "rs2243639"=unlist(lapply(strsplit(Con$rs2243639,''), paste, collapse = ' '))))
+
+MAPFile <- data.frame(cbind("chromosome"=Consnp_locations$chr_name, 
+                 "rsID"=data.frame("rsID"=Consnp_locations$refsnp_id), 
+                 "Genetic Distance"=data.frame("Genetic Distance"=matrix(0, nrow=length(colnames(Con)[9:22]), ncol=1)), 
+                 "BP"=Consnp_locations$chrom_start))
+
+CovarFile <- data.frame(cbind("FID"=PEDFile$FID,
+                              "IID"=PEDFile$IID,
+                              "Sex" = Con$Gender,
+                              "Asian" = Con$Ethnicity_Asian,
+                              "Black" = Con$Ethnicity_Black,
+                              "Island" = Con$Ethnicity_Islander,
+                              "Latino" = Con$Ethnicity_Latino,
+                              "Mixed" = Con$Ethnicity_Mixed,
+                              "Native" = Con$Ethnicity_Native,
+                              "White" = Con$Ethnicity_White))
+
+write.table(PEDFile, 
+            "/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Consultation2/PRF_Controls.ped", 
+            sep="\t", 
+            quote=F,
+            col.names=F, 
+            row.names=F)
+write.table(MAPFile, 
+            "/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Consultation2/PRF_Controls.map", 
+            sep="\t", 
+            quote=F,
+            col.names=F,
+            row.names=F)
+write.table(CovarFile, 
+            "/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Consultation2/PRF_Controls.txt", 
+            sep="\t", 
+            quote=F, 
+            col.names=T, 
+            row.names=F)
+```
+
+### Allele Frequencies 
+```{r}
+# Full Dataset
+# Genotype Frequencies
+rs1059046 <- as.data.frame(table(Full_Data$rs1059046))
+rs1059046$Freq <- round(rs1059046$Freq/sum(rs1059046$Freq), digits=5)
+rs1059046$'Genotype Frequency' <- paste(rs1059046$Var1, rs1059046$Freq, sep=" ")
+
+rs17886395 <- as.data.frame(table(Full_Data$rs17886395))
+rs17886395$Freq <- round(rs17886395$Freq/sum(rs17886395$Freq), digits=5)
+rs17886395$'Genotype Frequency' <- paste(rs17886395$Var1, rs17886395$Freq, sep=" ")
+
+rs1965707 <- as.data.frame(table(Full_Data$rs1965707))
+rs1965707$Freq <- round(rs1965707$Freq/sum(rs1965707$Freq), digits=5)
+rs1965707$'Genotype Frequency' <- paste(rs1965707$Var1, rs1965707$Freq, sep=" ")
+
+rs1965708 <- as.data.frame(table(Full_Data$rs1965708))
+rs1965708$Freq <- round(rs1965708$Freq/sum(rs1965708$Freq), digits=5)
+rs1965708$'Genotype Frequency' <- paste(rs1965708$Var1, rs1965708$Freq, sep=" ")
+
+rs1059047 <- as.data.frame(table(Full_Data$rs1059047))
+rs1059047$Freq <- round(rs1059047$Freq/sum(rs1059047$Freq), digits=5)
+rs1059047$'Genotype Frequency' <- paste(rs1059047$Var1, rs1059047$Freq, sep=" ")
+
+rs1136450 <- as.data.frame(table(Full_Data$rs1136450))
+rs1136450$Freq <- round(rs1136450$Freq/sum(rs1136450$Freq), digits=5)
+rs1136450$'Genotype Frequency' <- paste(rs1136450$Var1, rs1136450$Freq, sep=" ")
+
+rs1136451 <- as.data.frame(table(Full_Data$rs1136451))
+rs1136451$Freq <- round(rs1136451$Freq/sum(rs1136451$Freq), digits=5)
+rs1136451$'Genotype Frequency' <- paste(rs1136451$Var1, rs1136451$Freq, sep=" ")
+
+rs1059057 <- as.data.frame(table(Full_Data$rs1059057))
+rs1059057$Freq <- round(rs1059057$Freq/sum(rs1059057$Freq), digits=5)
+rs1059057$'Genotype Frequency' <- paste(rs1059057$Var1, rs1059057$Freq, sep=" ")
+
+
+rs4253527 <- as.data.frame(table(Full_Data$rs4253527))
+rs4253527$Freq <- round(rs4253527$Freq/sum(rs4253527$Freq), digits=5)
+rs4253527$'Genotype Frequency' <- paste(rs4253527$Var1, rs4253527$Freq, sep=" ")
+
+rs1130866 <- as.data.frame(table(Full_Data$rs1130866))
+rs1130866$Freq <- round(rs1130866$Freq/sum(rs1130866$Freq), digits=5)
+rs1130866$'Genotype Frequency' <- paste(rs1130866$Var1, rs1130866$Freq, sep=" ")
+
+rs4715 <- as.data.frame(table(Full_Data$rs4715))
+rs4715$Freq <- round(rs4715$Freq/sum(rs4715$Freq), digits=5)
+rs4715$'Genotype Frequency' <- paste(rs4715$Var1, rs4715$Freq, sep=" ")
+
+rs1124 <- as.data.frame(table(Full_Data$rs1124))
+rs1124$Freq <- round(rs1124$Freq/sum(rs1124$Freq), digits=5)
+rs1124$'Genotype Frequency' <- paste(rs1124$Var1, rs1124$Freq, sep=" ")
+
+rs721917 <- as.data.frame(table(Full_Data$rs721917))
+rs721917$Freq <- round(rs721917$Freq/sum(rs721917$Freq), digits=5)
+rs721917$'Genotype Frequency' <- paste(rs721917$Var1, rs721917$Freq, sep=" ")
+
+rs2243639 <- as.data.frame(table(Full_Data$rs2243639))
+rs2243639$Freq <- round(rs2243639$Freq/sum(rs2243639$Freq), digits=5)
+rs2243639$'Genotype Frequency' <- paste(rs2243639$Var1, rs2243639$Freq, sep=" ")
+
+FullGenos <- rbind(transpose(rs1130866)[3,], 
+                 transpose(rs4715)[3,], 
+                 transpose(rs1124)[3,], 
+                 transpose(rs1965708)[3,], 
+                 transpose(rs1965707)[3,], 
+                 transpose(rs17886395)[3,], 
+                 transpose(rs1059046)[3,], 
+                 transpose(rs1059047)[3,], 
+                 transpose(rs1136450)[3,], 
+                 transpose(rs1136451)[3,], 
+                 transpose(rs1059057)[3,], 
+                 transpose(rs4253527)[3,], 
+                 transpose(rs2243639)[3,], 
+                 transpose(rs721917)[3,])
+
+colnames(FullGenos) <- c("Genotype 1","Genotype 2","Genotype 3")
+
+Freq <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Consultation2/PRF_Frequency.frq", sep=" ", header=T)
+Freq
+
+FrequencyTable <- as.data.frame(cbind("SNP ID"=Freq$SNP, 
+                                      "Chromosome"=Freq$CHR,
+                                      "Allele"=Freq$A1, 
+                                      "Frequency"=(1-Freq$MAF), 
+                                      "Allele"=Freq$A2, 
+                                      "Frequency"=Freq$MAF,
+                                      "Genotype 1"=FullGenos$`Genotype 1`, 
+                                      "Genotype 2"=FullGenos$`Genotype 2`, 
+                                      "Genotype 3"=FullGenos$`Genotype 3`))
+FrequencyTable %>%
+  kbl(caption = "Allele Frequencies of Possible PRF Associated SNPs") %>%
+  kable_classic(full_width = F, html_font = "Cambria") %>% 
+  add_header_above(c(" " = 2, "Allele Frequency" = 4, "Genotype Frequency" = 3))
+```
+
+```{r}
+# Cases Only
+# Genotype Frequencies
+
+rs1059046 <- as.data.frame(table(Ca$rs1059046))
+rs1059046$Freq <- round(rs1059046$Freq/sum(rs1059046$Freq), digits=5)
+rs1059046$'Genotype Frequency' <- paste(rs1059046$Var1, rs1059046$Freq, sep=" ")
+
+rs17886395 <- as.data.frame(table(Ca$rs17886395))
+rs17886395$Freq <- round(rs17886395$Freq/sum(rs17886395$Freq), digits=5)
+rs17886395$'Genotype Frequency' <- paste(rs17886395$Var1, rs17886395$Freq, sep=" ")
+
+rs1965707 <- as.data.frame(table(Ca$rs1965707))
+rs1965707$Freq <- round(rs1965707$Freq/sum(rs1965707$Freq), digits=5)
+rs1965707$'Genotype Frequency' <- paste(rs1965707$Var1, rs1965707$Freq, sep=" ")
+
+rs1965708 <- as.data.frame(table(Ca$rs1965708))
+rs1965708$Freq <- round(rs1965708$Freq/sum(rs1965708$Freq), digits=5)
+rs1965708$'Genotype Frequency' <- paste(rs1965708$Var1, rs1965708$Freq, sep=" ")
+
+rs1059047 <- as.data.frame(table(Ca$rs1059047))
+rs1059047$Freq <- round(rs1059047$Freq/sum(rs1059047$Freq), digits=5)
+rs1059047$'Genotype Frequency' <- paste(rs1059047$Var1, rs1059047$Freq, sep=" ")
+
+rs1136450 <- as.data.frame(table(Ca$rs1136450))
+rs1136450$Freq <- round(rs1136450$Freq/sum(rs1136450$Freq), digits=5)
+rs1136450$'Genotype Frequency' <- paste(rs1136450$Var1, rs1136450$Freq, sep=" ")
+
+rs1136451 <- as.data.frame(table(Ca$rs1136451))
+rs1136451$Freq <- round(rs1136451$Freq/sum(rs1136451$Freq), digits=5)
+rs1136451$'Genotype Frequency' <- paste(rs1136451$Var1, rs1136451$Freq, sep=" ")
+
+rs1059057 <- as.data.frame(table(Ca$rs1059057))
+rs1059057$Freq <- round(rs1059057$Freq/sum(rs1059057$Freq), digits=5)
+rs1059057$'Genotype Frequency' <- paste(rs1059057$Var1, rs1059057$Freq, sep=" ")
+
+rs4253527 <- as.data.frame(table(Ca$rs4253527))
+rs4253527$Freq <- round(rs4253527$Freq/sum(rs4253527$Freq), digits=5)
+rs4253527$'Genotype Frequency' <- paste(rs4253527$Var1, rs4253527$Freq, sep=" ")
+
+rs1130866 <- as.data.frame(table(Ca$rs1130866))
+rs1130866$Freq <- round(rs1130866$Freq/sum(rs1130866$Freq), digits=5)
+rs1130866$'Genotype Frequency' <- paste(rs1130866$Var1, rs1130866$Freq, sep=" ")
+
+rs4715 <- as.data.frame(table(Ca$rs4715))
+rs4715$Freq <- round(rs4715$Freq/sum(rs4715$Freq), digits=5)
+rs4715$'Genotype Frequency' <- paste(rs4715$Var1, rs4715$Freq, sep=" ")
+
+rs1124 <- as.data.frame(table(Ca$rs1124))
+rs1124$Freq <- round(rs1124$Freq/sum(rs1124$Freq), digits=5)
+rs1124$'Genotype Frequency' <- paste(rs1124$Var1, rs1124$Freq, sep=" ")
+
+rs721917 <- as.data.frame(table(Ca$rs721917))
+rs721917$Freq <- round(rs721917$Freq/sum(rs721917$Freq), digits=5)
+rs721917$'Genotype Frequency' <- paste(rs721917$Var1, rs721917$Freq, sep=" ")
+
+rs2243639 <- as.data.frame(table(Ca$rs2243639))
+rs2243639$Freq <- round(rs2243639$Freq/sum(rs2243639$Freq), digits=5)
+rs2243639$'Genotype Frequency' <- paste(rs2243639$Var1, rs2243639$Freq, sep=" ")
+
+CaGenos <- rbind(transpose(rs1130866)[3,], 
+                 transpose(rs4715)[3,], 
+                 transpose(rs1124)[3,], 
+                 transpose(rs1965708)[3,], 
+                 transpose(rs1965707)[3,], 
+                 transpose(rs17886395)[3,], 
+                 transpose(rs1059046)[3,], 
+                 transpose(rs1059047)[3,], 
+                 transpose(rs1136450)[3,], 
+                 transpose(rs1136451)[3,], 
+                 transpose(rs1059057)[3,], 
+                 transpose(rs4253527)[3,], 
+                 transpose(rs2243639)[3,], 
+                 transpose(rs721917)[3,])
+
+colnames(CaGenos) <- c("Genotype 1","Genotype 2","Genotype 3")
+
+Freq <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Consultation2/PRF_Case_Frequency.frq", sep=" ", header=T)
+Freq
+
+FrequencyTable <- as.data.frame(cbind("SNP ID"=Freq$SNP, 
+                                      "Chromosome"=Freq$CHR,
+                                      "Allele"=Freq$A1, 
+                                      "Frequency"=(1-Freq$MAF), 
+                                      "Allele"=Freq$A2, 
+                                      "Frequency"=Freq$MAF,
+                                      "Genotype 1"=CaGenos$`Genotype 1`, 
+                                      "Genotype 2"=CaGenos$`Genotype 2`, 
+                                      "Genotype 3"=CaGenos$`Genotype 3`))
+FrequencyTable %>%
+  kbl(caption = "Allele Frequencies of Possible PRF Case Associated SNPs") %>%
+  kable_classic(full_width = F, html_font = "Cambria") %>% 
+  add_header_above(c(" " = 2, "Allele Frequency" = 4, "Genotype Frequency" = 3))
+```
+
+```{r}
+# Controls Only
+# Genotype Frequencies
+rs1059046 <- as.data.frame(table(Con$rs1059046))
+rs1059046$Freq <- round(rs1059046$Freq/sum(rs1059046$Freq), digits=5)
+rs1059046$'Genotype Frequency' <- paste(rs1059046$Var1, rs1059046$Freq, sep=" ")
+
+rs17886395 <- as.data.frame(table(Con$rs17886395))
+rs17886395$Freq <- round(rs17886395$Freq/sum(rs17886395$Freq), digits=5)
+rs17886395$'Genotype Frequency' <- paste(rs17886395$Var1, rs17886395$Freq, sep=" ")
+
+rs1965707 <- as.data.frame(table(Con$rs1965707))
+rs1965707$Freq <- round(rs1965707$Freq/sum(rs1965707$Freq), digits=5)
+rs1965707$'Genotype Frequency' <- paste(rs1965707$Var1, rs1965707$Freq, sep=" ")
+
+rs1965708 <- as.data.frame(table(Con$rs1965708))
+rs1965708$Freq <- round(rs1965708$Freq/sum(rs1965708$Freq), digits=5)
+rs1965708$'Genotype Frequency' <- paste(rs1965708$Var1, rs1965708$Freq, sep=" ")
+
+rs1059047 <- as.data.frame(table(Con$rs1059047))
+rs1059047$Freq <- round(rs1059047$Freq/sum(rs1059047$Freq), digits=5)
+rs1059047$'Genotype Frequency' <- paste(rs1059047$Var1, rs1059047$Freq, sep=" ")
+
+rs1136450 <- as.data.frame(table(Con$rs1136450))
+rs1136450$Freq <- round(rs1136450$Freq/sum(rs1136450$Freq), digits=5)
+rs1136450$'Genotype Frequency' <- paste(rs1136450$Var1, rs1136450$Freq, sep=" ")
+
+rs1136451 <- as.data.frame(table(Con$rs1136451))
+rs1136451$Freq <- round(rs1136451$Freq/sum(rs1136451$Freq), digits=5)
+rs1136451$'Genotype Frequency' <- paste(rs1136451$Var1, rs1136451$Freq, sep=" ")
+
+rs1059057 <- as.data.frame(table(Con$rs1059057))
+rs1059057$Freq <- round(rs1059057$Freq/sum(rs1059057$Freq), digits=5)
+rs1059057$'Genotype Frequency' <- paste(rs1059057$Var1, rs1059057$Freq, sep=" ")
+
+rs4253527 <- as.data.frame(table(Con$rs4253527))
+rs4253527$Freq <- round(rs4253527$Freq/sum(rs4253527$Freq), digits=5)
+rs4253527$'Genotype Frequency' <- paste(rs4253527$Var1, rs4253527$Freq, sep=" ")
+
+rs1130866 <- as.data.frame(table(Con$rs1130866))
+rs1130866$Freq <- round(rs1130866$Freq/sum(rs1130866$Freq), digits=5)
+rs1130866$'Genotype Frequency' <- paste(rs1130866$Var1, rs1130866$Freq, sep=" ")
+
+rs4715 <- as.data.frame(table(Con$rs4715))
+rs4715$Freq <- round(rs4715$Freq/sum(rs4715$Freq), digits=5)
+rs4715$'Genotype Frequency' <- paste(rs4715$Var1, rs4715$Freq, sep=" ")
+
+rs1124 <- as.data.frame(table(Con$rs1124))
+rs1124$Freq <- round(rs1124$Freq/sum(rs1124$Freq), digits=5)
+rs1124$'Genotype Frequency' <- paste(rs1124$Var1, rs1124$Freq, sep=" ")
+
+rs721917 <- as.data.frame(table(Con$rs721917))
+rs721917$Freq <- round(rs721917$Freq/sum(rs721917$Freq), digits=5)
+rs721917$'Genotype Frequency' <- paste(rs721917$Var1, rs721917$Freq, sep=" ")
+
+rs2243639 <- as.data.frame(table(Con$rs2243639))
+rs2243639$Freq <- round(rs2243639$Freq/sum(rs2243639$Freq), digits=5)
+rs2243639$'Genotype Frequency' <- paste(rs2243639$Var1, rs2243639$Freq, sep=" ")
+
+ConGenos <- rbind(transpose(rs1130866)[3,], 
+                 transpose(rs4715)[3,], 
+                 transpose(rs1124)[3,], 
+                 transpose(rs1965708)[3,], 
+                 transpose(rs1965707)[3,], 
+                 transpose(rs17886395)[3,], 
+                 transpose(rs1059046)[3,], 
+                 transpose(rs1059047)[3,], 
+                 transpose(rs1136450)[3,], 
+                 transpose(rs1136451)[3,], 
+                 transpose(rs1059057)[3,], 
+                 transpose(rs4253527)[3,], 
+                 transpose(rs2243639)[3,], 
+                 transpose(rs721917)[3,])
+
+colnames(ConGenos) <- c("Genotype 1","Genotype 2","Genotype 3")
+
+Freq <- fread("/Users/keenananderson-fears/Desktop/Dr._Liu_Lab/Consultations/Gandhi/Consultation2/PRF_Control_Frequency.frq", sep=" ", header=T)
+Freq
+
+FrequencyTable <- as.data.frame(cbind("SNP ID"=Freq$SNP, 
+                                      "Chromosome"=Freq$CHR,
+                                      "Allele"=Freq$A1, 
+                                      "Frequency"=(1-Freq$MAF), 
+                                      "Allele"=Freq$A2, 
+                                      "Frequency"=Freq$MAF,
+                                      "Genotype 1"=ConGenos$`Genotype 1`, 
+                                      "Genotype 2"=ConGenos$`Genotype 2`, 
+                                      "Genotype 3"=ConGenos$`Genotype 3`))
+FrequencyTable %>%
+  kbl(caption = "Allele Frequencies of Possible PRF Control Associated SNPs") %>%
+  kable_classic(full_width = F, html_font = "Cambria") %>% 
+  add_header_above(c(" " = 2, "Allele Frequency" = 4, "Genotype Frequency" = 3))
+```
+
+#### Multiallelic Variant Frequencies
+```{r, message=F, warning=F, echo=F}
+par(mfrow=c(1,2))
+plot(table(Full_Data$`SP-A1`))
+plot(table(Full_Data$`SP-A2`))
+```
+
+Many of the multiallelic variants have only a single to a handfull of counts. As such, in line with litterature PMID: 19914637, low count variants were combined and LR model run in following steps.
+
+### Combining Multiallelic Variants
+```{r, message=F, warning=F}
+MultiAllelic1 <- dummy_cols(Full_Data, select_columns = 'SP-A1', ignore_na=T, remove_selected_columns=T)
+MultiAllelic1 <- MultiAllelic1[,-c(1:20,28)]
+
+MultiAllelic2 <- dummy_cols(Full_Data, select_columns = 'SP-A2', ignore_na=T, remove_selected_columns=T)
+MultiAllelic2 <- MultiAllelic2[,-c(1:28)]
+
+MultiAllelic <- data.frame(cbind("Phenotype" = ifelse(Full_Data$Phenotype==1,0,1),
+                                 "Sex" = Full_Data$Gender))
+
+MultiAllelic <- data.frame(cbind(MultiAllelic, MultiAllelic1, MultiAllelic2))
+MultiAllelic <- sapply(MultiAllelic, as.numeric)
+MultiAllelic <- as.data.frame(MultiAllelic)
+
+MultiAllelic$SP.A1_Other <- ifelse(Full_Data$`SP-A1` %in% c("6A2/6A3","6A2/6A2","6A/6A2","6A2/6A4","6A3/6A3"), 0, 1)
+
+MultiAllelic$SP.A2_Other <- ifelse(Full_Data$`SP-A2` %in% c("1A0/1A0","1A/1A0","1A0/1A1","1A0/1A2","1A0/1A3"), 0, 1)
+
+MultiAllelic <- data.frame(cbind("Phenotype"=MultiAllelic$Phenotype, 
+                      "Asian"=MultiAllelic$Ethnicity_Asian, 
+                      "Black"=MultiAllelic$Ethnicity_Black,
+                      "Islander"=MultiAllelic$Ethnicity_Islander,
+                      "Latino"=MultiAllelic$Ethnicity_Latino,
+                      "Mixed"=MultiAllelic$Ethnicity_Mixed,
+                      "Native"=MultiAllelic$Ethnicity_Native,
+                      "Sex"=MultiAllelic$Sex,
+                      "A21A1A0"=MultiAllelic$SP.A2_1A.1A0,
+                      "A21A01A0"=MultiAllelic$SP.A2_1A0.1A0,
+                      "A21A01A1"=MultiAllelic$SP.A2_1A0.1A1,
+                      "A21A01A2"=MultiAllelic$SP.A2_1A0.1A2,
+                      "A21A01A3"=MultiAllelic$SP.A2_1A0.1A3,
+                      "A16A26A3"=MultiAllelic$SP.A1_6A2.6A3,
+                      "A16A26A2"=MultiAllelic$SP.A1_6A2.6A2,
+                      "A16A6A2"=MultiAllelic$SP.A1_6A.6A2,
+                      "A16A26A4"=MultiAllelic$SP.A1_6A2.6A4,
+                      "A16A36A3"=MultiAllelic$SP.A1_6A3.6A3))
+
+MultiAllelic <- sapply(MultiAllelic, as.numeric)
+MultiAllelic <- as.data.frame(MultiAllelic)
+MultiAllelic <- na.omit(MultiAllelic)
+```
+
+### Multiallelic Model
+```{r, message=F, warning=F}
+cmod1 <- glm(Phenotype ~., data=MultiAllelic, family=binomial)
+summary(cmod1)
+```
+
+### Multiallelic Model Significant Results
+```{r, message=F, warning=F, echo=F}
+SNPodds <- exp(cmod1$coefficients)
+SNPData <- as.data.frame(cbind("Name"=matrix(names(cmod1$coefficients)[-1], ncol=1),
+                                "OR"=na.omit(unname(SNPodds)[-1]),
+                                "P"=matrix(coef(summary(cmod1))[-1,4], ncol=1),
+                                "2.5%"=matrix(exp(na.omit(confint.default(cmod1, level=0.95))[-1,])[,1]),
+                                "97.5%"=matrix(exp(na.omit(confint.default(cmod1, level=0.95))[-1,])[,2])))
+SNPData <- SNPData[c(10),]
+colnames(SNPData)[colnames(SNPData) == "V1"] <- "Variant"
+colnames(SNPData)[colnames(SNPData) == "V3"] <- "P"
+colnames(SNPData)[colnames(SNPData) == "V4"] <- "2.5%"
+colnames(SNPData)[colnames(SNPData) == "V5"] <- "97.5%"
+rownames(SNPData) <- NULL
+
+# Approximate proportion of pediatric patients with incidence of acute respiratory failure
+ARFodds <- 0.03/(1 - 0.03)
+SNPData$ARF_Risk <- (as.numeric(SNPData$OR)*ARFodds)/(1 + as.numeric(SNPData$OR)*ARFodds)
+
+SNPData %>%
+  kbl(caption = "Odds Ratios & CIs of Significant Multiallelic SNPs with Covariates") %>%
+  kable_classic(full_width = F, html_font = "Cambria")
+```
+
+From our multiallelic model we see that the SP-A2 variant 1A0/1A1 was found to be significant after Bonferroni correction with p = 8.33e-05 and OR < 1 denoting protective action. 
+
+### Multiallelic Likelihood Ratio Tests
+
+Finally we assess the goodness of fit between a model with clinical covariates only and a model containing clinical covariates and our genetic variants
+```{r, message=F, warning=F}
+fullmodel <- glm(Phenotype ~ ., data=MultiAllelic, family=binomial)
+covmodel <- glm(Phenotype ~ Sex + Black + Asian + Islander + Latino + Mixed + Native, data=MultiAllelic, family=binomial)
+
+lrtest(fullmodel, covmodel)
+```
+
+Again, we ask does the data fit each of the two models equally well, and from this we see that with a Chisq of 32.453 and P-Value of 0.0003364, that we reject the null hypothesis that the two are equal. Therefore, the model with the additional genetic variants is a better fit and offers significant improvement over the model with only the covarites as our predictors.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
