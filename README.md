@@ -2,7 +2,7 @@
 
 Introduction:
 
-Workflow and results for the paper "Association of surfactant protein A2 with acute respiratory failure in children". If you want to peruse code I suggest the markdown file, otherwise for rendered figures, etc. I suggest downloading the HTML.
+Workflow and results for the paper "Association of surfactant protein A2 with acute respiratory failure in children". If you want to peruse code I suggest the markdown file, otherwise for rendered figures, etc. I suggest reading the HTML (you can view it by going to https://html-preview.github.io and copying/pasting the URL in the space provided).
 
 Citation:
 
